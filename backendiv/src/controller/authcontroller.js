@@ -57,7 +57,13 @@ const loginuser = async (req, res) => {
   }
   const token = jwt.sign({ id: user._id }, process.env.JWT_SECRET);
 
-  res.cookie("token", token);
+  res.cookie("token", token, {
+    httpOnly: true,
+    secure: true,
+    sameSite: "none",
+    path: "/",
+  });
+  
  return res.status(200).json(
     new APIResponse(200,
         { id: user._id, username: user.username, email: user.email },
