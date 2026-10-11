@@ -11,17 +11,12 @@ const allowedOrigins = [
 
 app.use(express.json());
 app.use(cookieParser());
-app.use(cors({
-  origin: (origin, callback) => {
-    if (!origin || allowedOrigins.includes(origin)) {
-      callback(null, true);
-      return;
-    }
-
-    callback(new Error("Not allowed by CORS"));
-  },
-  credentials: true,
-}));
+ app.use(
+   cors({
+     origin: "https://ai-powered-iv.vercel.app",
+     credentials: true,
+   }),
+ );
 
 // require all routes
 import authRoutes from "./routes/auth.routes.js";
