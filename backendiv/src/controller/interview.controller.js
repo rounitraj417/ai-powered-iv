@@ -6,17 +6,38 @@ import {
 } from "../services/ai.service.js";
 import { APIError } from "../utils/apierror.js";
 
+function getAuthenticatedUserId(req) {
+  if (!req.user?.id) {
+    throw new APIError(401, "Authentication required.");
+  }
+
+  return req.user.id;
+}
+
+function isValidInterviewReportId(id) {
+  return typeof id === "string" && /^[a-f\d]{24}$/i.test(id);
+}
+
 /**
  * @description Controller to generate interview report based on user self description, resume and job description.
  */
 async function generateInterViewReportController(req, res) {
-  const { selfDescription, jobDescription } = req.body;
+  const userId = getAuthenticatedUserId(req);
+  const { selfDescription, jobDescription } = req.body ?? {};
 
-  if (!jobDescription?.trim()) {
+  if (typeof jobDescription !== "string" || !jobDescription.trim()) {
     throw new APIError(400, "Job description is required.");
   }
 
-  if (!req.file?.buffer && !selfDescription?.trim()) {
+  if (
+    selfDescription !== undefined &&
+    typeof selfDescription !== "string"
+  ) {
+    throw new APIError(400, "Self-description must be text.");
+  }
+
+  const normalizedSelfDescription = selfDescription?.trim() ?? "";
+  if (!req.file?.buffer && !normalizedSelfDescription) {
     throw new APIError(
       400,
       "Upload a resume or provide a self-description.",
@@ -34,17 +55,27 @@ async function generateInterViewReportController(req, res) {
     }
   }
 
-  const interViewReportByAi = await generateInterviewReport({
-    resume: resumeContent,
-    selfDescription,
-    jobDescription,
-  });
+  let interViewReportByAi;
+  try {
+    interViewReportByAi = await generateInterviewReport({
+      resume: resumeContent,
+      selfDescription: normalizedSelfDescription,
+      jobDescription: jobDescription.trim(),
+    });
+  } catch (error) {
+    console.error("Gemini interview report generation failed:", error.message);
+    throw new APIError(
+      502,
+      "Interview report generation failed. Please try again later.",
+    );
+  }
+
   const generatedTitle =
     typeof interViewReportByAi.title === "string"
       ? interViewReportByAi.title.trim()
       : "";
   const fallbackTitle =
-    jobDescription
+    jobDescription.trim()
       .split(/\r?\n/)
       .map((line) => line.trim())
       .find(Boolean)
@@ -52,10 +83,10 @@ async function generateInterViewReportController(req, res) {
       .slice(0, 120) || "Interview Plan";
 
   const interviewReport = await interviewReportModel.create({
-    user: req.user.id,
+    user: userId,
     resume: resumeContent,
-    selfDescription,
-    jobDescription,
+    selfDescription: normalizedSelfDescription,
+    jobDescription: jobDescription.trim(),
     ...interViewReportByAi,
     title: generatedTitle || fallbackTitle,
   });
@@ -71,14 +102,14 @@ async function generateInterViewReportController(req, res) {
  */
 async function getInterviewReportByIdController(req, res) {
   const { interviewId } = req.params;
-
-  if (!req.user?.id) {
-    throw new APIError(401, "Authentication required.");
+  const userId = getAuthenticatedUserId(req);
+  if (!isValidInterviewReportId(interviewId)) {
+    throw new APIError(400, "Invalid interview report id.");
   }
 
   const interviewReport = await interviewReportModel.findOne({
     _id: interviewId,
-    user: req.user.id,
+    user: userId,
   });
 
   if (!interviewReport) {
@@ -97,12 +128,10 @@ async function getInterviewReportByIdController(req, res) {
  * @description Controller to get all interview reports of logged in user.
  */
 async function getAllInterviewReportsController(req, res) {
-  if (!req.user?.id) {
-    throw new APIError(401, "Authentication required.");
-  }
+  const userId = getAuthenticatedUserId(req);
 
   const interviewReports = await interviewReportModel
-    .find({ user: req.user.id })
+    .find({ user: userId })
     .sort({ createdAt: -1 })
     .select(
       "-resume -selfDescription -jobDescription -__v -technicalQuestions -behavioralQuestions -skillGaps -preparationPlan",
@@ -118,18 +147,20 @@ async function getAllInterviewReportsController(req, res) {
  * @description Controller to generate resume PDF based on user self description, resume and job description.
  */
 async function generateResumePdfController(req, res) {
-  const { interviewReportId } = req.params;
-
-  if (!interviewReportId && req.body?.interviewReportId) {
-    req.params.interviewReportId = req.body.interviewReportId;
-  }
-
-  const reportIdToFetch = req.params.interviewReportId;
+  const userId = getAuthenticatedUserId(req);
+  const reportIdToFetch =
+    req.params.interviewReportId ?? req.body?.interviewReportId;
   if (!reportIdToFetch) {
     throw new APIError(400, "Interview report id is required.");
   }
+  if (!isValidInterviewReportId(reportIdToFetch)) {
+    throw new APIError(400, "Invalid interview report id.");
+  }
 
-  const interviewReport = await interviewReportModel.findById(reportIdToFetch);
+  const interviewReport = await interviewReportModel.findOne({
+    _id: reportIdToFetch,
+    user: userId,
+  });
 
   if (!interviewReport) {
     return res.status(404).json({
@@ -139,11 +170,20 @@ async function generateResumePdfController(req, res) {
 
   const { resume, jobDescription, selfDescription } = interviewReport;
 
-  const pdfBuffer = await generateResumePdf({
-    resume,
-    jobDescription,
-    selfDescription,
-  });
+  let pdfBuffer;
+  try {
+    pdfBuffer = await generateResumePdf({
+      resume,
+      jobDescription,
+      selfDescription,
+    });
+  } catch (error) {
+    console.error("Gemini resume generation failed:", error.message);
+    throw new APIError(
+      502,
+      "Resume generation failed. Please try again later.",
+    );
+  }
 
   res.set({
     "Content-Type": "application/pdf",
